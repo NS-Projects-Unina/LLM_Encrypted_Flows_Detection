@@ -1,0 +1,110 @@
+volumes:
+  shared-certs:
+services:
+  # Nodo 1: Ingestion Layer (Edge Proxy)
+  edge-proxy:
+    build: 
+      context: ./proxy 
+      dockerfile: Dockerfile
+    container_name: edge-proxy
+    platform: linux/arm64
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8080:8080"
+      - "465:465"
+    volumes:
+      - ./proxy:/home/mitmproxy/scripts
+      - ./mitmproxy_certs:/home/mitmproxy/.mitmproxy # Monta la cartella dei certificati di mitmproxy, in modo che il proxy possa accedervi per generare i certificati TLS al volo
+      - shared-certs:/certs # Monta il volume dei certificati in sola lettura (ro)
+    depends_on:
+      - inference-engine # Assicura che il proxy parta solo dopo che il nodo di inferenza è pronto, in modo da travora il certificato TLS al volo e avviare Uvicorn in HTTPS
+    entrypoint: ["mitmdump"] 
+    command: 
+      - "-p"
+      - "465"
+      - "--mode"
+      - "reverse:tcp://10.0.1.10:25" # Inoltra tutto il traffico SMTP al mail server interno
+      - "--set"
+      - "listen_host=0.0.0.0" # Ascolta su tutte le interfacce per accettare traffico da attaccante e mail server
+      - "--set"
+      - "confdir=/home/mitmproxy/.mitmproxy" # Usa questa directory per i certificati e la configurazione persistente
+      - "-s"
+      - "/home/mitmproxy/scripts/payload_extraction.py" # Script per estrarre payload e metadata
+      - "-s"
+      - "/home/mitmproxy/scripts/fingerprinting.py" # Script per fingerprinting JA3
+    networks:
+      public-net:
+          ipv4_address: 10.0.0.5 # IP statico del proxy nella rete pubblica
+      private-net:
+          ipv4_address: 10.0.1.5 # IP statico del proxy nella rete privata
+
+  # Nodo 2: Analysis Layer (Inference Engine) - IL "CERVELLO"
+  inference-engine:
+    build: ./analysis  # Useremo un Dockerfile per installare le librerie AI
+    container_name: inference-engine
+    platform: linux/arm64
+    networks:
+      private-net: # Totalmente isolato dall'attaccante
+        ipv4_address: 10.0.1.20 # IP statico del nodo di inferenza
+    # Questo nodo non ha porte esposte all'esterno: è accessibile solo dal proxy
+    volumes:
+      - shared-certs:/certs
+      - ./models:/app/models
+    # Comando che genera il certificato TLS al volo e poi avvia Uvicorn in HTTPS
+    command: >
+      sh -c "openssl req -x509 -newkey rsa:4096 -nodes -out /certs/cert.pem -keyout /certs/key.pem -days 365 -subj '/CN=inference-engine' -addext 'subjectAltName=IP:10.0.1.20,DNS:inference-engine' 
+      && uvicorn main:app --host 0.0.0.0 --port 5000 --ssl-keyfile /certs/key.pem --ssl-certfile /certs/cert.pem"
+
+  # Nodo 3: Mail Server (Destinatario Finale)
+  mail-server:
+    # Postfix è leggero, ma usiamo un'immagine compatibile ARM
+    build: ./mail # Useremo un Dockerfile per configurare Postfix in modo semplice
+    container_name: mail-server
+    platform: linux/arm64
+    environment:
+      # Definisce l'identità del server (FQDN)
+      - POSTFIX_myhostname=mail.netsentinel.local
+      - POSTFIX_mydestination=mail.netsentinel.local,netsentinel.local,localhost.localdomain,localhost # Definisce i domini per cui il server accetterà mail (il nostro dominio simulato)
+      - POSTFIX_mynetworks=10.0.1.0/24,127.0.0.0/8 # Accettiamo mail solo dalla nostra rete privata e localhost
+      - ALLOWED_SENDER_DOMAINS=netsentinel.local,attacker.local,localhost # Whitelist: accetta mail da questi domini simulati
+      - LOG_LEVEL=debug # Log più dettagliati per il debug
+      # Permettiamo TLS ma non lo richiediamo (STARTTLS è opzionale), nelle fasi successive potremmo aumentare la sicurezza
+      - POSTFIX_smtpd_recipient_restrictions=permit_mynetworks,permit_sasl_authenticated,reject_unauth_destination
+      - POSTFIX_smtpd_tls_security_level=may
+      - POSTFIX_smtpd_tls_auth_only=no
+    networks:
+      private-net: # Totalmente isolato dall'attaccante
+        ipv4_address: 10.0.1.10 # IP statico per il server
+
+  # Nodo 4: Attacker Simulator (Il Mittente)
+  attacker-node:
+    build: ./attacker # Costruiamo l'immagine dal Dockerfile nella cartella "attacker"
+    container_name: attacker-node
+    platform: linux/arm64
+    volumes:
+      - ./attacker:/scripts # 
+      - ./mitmproxy_certs:/mnt/cert_source:ro # Montiamo qui i certificati originali, cioè copio i certificati di mitmproxy in una cartella temporanea all'interno del container dell'attaccante
+    # Nelle prossime righe, copiamo il certificato CA di mitmproxy nella posizione corretta all'interno del container dell'attaccante e aggiorniamo le CA del sistema, in modo che l'attaccante possa comunicare senza errori SSL con il proxy
+    command: >
+      sh -c "cp /mnt/cert_source/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy-ca.crt && 
+             update-ca-certificates && 
+             tail -f /dev/null"
+    networks:
+      public-net:  # L'attaccante vede solo la rete pubblica
+    tty: true # Mantiene il container attivo per permetterti di entrarci
+
+networks:
+  public-net:
+    driver: bridge   # Rappresenta Internet / Rete aziendale esposta
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24
+  private-net:
+    driver: bridge   # Rappresenta la rete interna protetta (Backend)
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24 # Definiamo una sottorete privata

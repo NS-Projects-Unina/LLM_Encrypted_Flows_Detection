@@ -1,0 +1,104 @@
+# 1. Installazione librerie (Colab richiede queste versioni per stabilità)
+!pip install -q transformers[torch] datasets peft accelerate pandas
+
+import pandas as pd
+import torch
+import os
+from google.colab import files
+from datasets import Dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from peft import get_peft_model, LoraConfig, TaskType
+
+# 2. Funzione di caricamento dati (Assicurati di aver caricato la cartella 'archive.zip' e averla scompattata)
+# Se non l'hai fatto, usa: !unzip archive.zip
+def prepare_data():
+    datasets = []
+    paths = {
+        "archive/human-generated/legit.csv": 0,
+        "archive/human-generated/phishing.csv": 1,
+        "archive/llm-generated/legit.csv": 2,
+        "archive/llm-generated/phishing.csv": 3
+    }
+    
+    for path, label in paths.items():
+        if not os.path.exists(path):
+            print(f"⚠ File non trovato: {path}")
+            continue
+        try:
+            df = pd.read_csv(path, on_bad_lines='skip', engine='python')
+            if 'subject' in df.columns and 'body' in df.columns:
+                df['text'] = (df['subject'].fillna('') + ' ' + df['body'].fillna('')).str.strip()
+            df = df[['text']].assign(labels=label)
+            datasets.append(df)
+            print(f"✓ Caricati {len(df)} campioni da {path}")
+        except Exception as e:
+            print(f"✗ Errore su {path}: {e}")
+
+    if not datasets:
+        raise ValueError("Nessun dataset trovato! Controlla i percorsi su Colab.")
+
+    full_df = pd.concat(datasets, ignore_index=True).sample(frac=1).reset_index(drop=True)
+    return Dataset.from_pandas(full_df)
+
+# --- Inizializzazione ---
+print("\n--- Preparazione Dataset ---")
+raw_dataset = prepare_data().train_test_split(test_size=0.1)
+model_name = "roberta-base" # Su Colab usiamo tranquillamente Roberta-Base (non Distil)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+def tokenize(batch):
+    texts = [str(t) if t is not None else "" for t in batch["text"]]
+    tokenized = tokenizer(texts, padding="max_length", truncation=True, max_length=512)
+    tokenized["labels"] = batch["labels"]
+    return tokenized
+
+tokenized_ds = raw_dataset.map(tokenize, batched=True, remove_columns=raw_dataset["train"].column_names)
+tokenized_ds.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
+
+# --- Configurazione Modello ---
+model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=4)
+
+peft_config = LoraConfig(
+    task_type=TaskType.SEQ_CLS, 
+    r=16, # Rango più alto per maggiore precisione
+    lora_alpha=32, 
+    lora_dropout=0.1,
+    target_modules=["query", "value"]
+)
+model = get_peft_model(model, peft_config)
+
+# --- Training Arguments ottimizzati per GPU T4 ---
+args = TrainingArguments(
+    output_dir="./output_phishing_model",
+    learning_rate=3e-4,
+    per_device_train_batch_size=16, 
+    gradient_accumulation_steps=1, # Non serve accumulo con 16GB di VRAM
+    num_train_epochs=4,
+    weight_decay=0.01,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    fp16=True, # Fondamentale per la velocità su GPU T4
+    report_to="none"
+)
+
+trainer = Trainer(
+    model=model, 
+    args=args, 
+    train_dataset=tokenized_ds["train"], 
+    eval_dataset=tokenized_ds["test"]
+)
+
+print("\n--- Inizio Addestramento su GPU Colab ---")
+trainer.train()
+
+# --- Salvataggio e Download ---
+output_dir = "./fine_tuned_ips_adapter"
+model.save_pretrained(output_dir)
+tokenizer.save_pretrained(output_dir)
+
+# Comprimiamo la cartella per scaricarla facilmente sul Mac
+!zip -r fine_tuned_ips_adapter.zip ./fine_tuned_ips_adapter
+files.download("fine_tuned_ips_adapter.zip")
+
+print("\n✓ Addestramento completato e file pronto per il download!")
