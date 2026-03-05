@@ -15,7 +15,7 @@ msg['From'] = SENDER
 msg['To'] = RECIPIENT
 
 
-testo_legittimo = """Hey buddy, listen, I'm going to the park to watch the game later. Want to come with me? Please reply quickly, and I'll arrange to bring some beers.
+testo_legittimo = """Yo fam, listen up, I'm hittin' the park to peep the fixture later. You tryna pull up? Holla back ASAP and I'll clutch some cold ones for us. Real talk, you're still the same ol' geezer. I clocked you were moving to Alice and you kept it on the low. I'm always catching strays finding out from the grapevine. Sometimes I wonder if we’re actually ride-or-die or just capping.
                     """
 
 msg.attach(MIMEText(testo_legittimo, 'plain', 'utf-8'))

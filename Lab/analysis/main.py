@@ -83,14 +83,14 @@ async def analyze_payload(data: AlertData):
     text = data.payload
     ja3_cat = data.ja3_classification
     
-    if not text or len(text.strip()) < 150:
+    if not text or len(text.strip()) < 50:
         return {"label": "NORMAL", "tag": ""}
 
     pp = calculate_perplexity(text)
     class_id = classify_roberta_multi(text) # 0:H-Legit, 1:H-Phish, 2:L-Legit, 3:L-Phish
     
-    # I test hanno mostrato che 60 è troppo stringente. 115-120 è un valore più realistico per catturare GPT-4/Claude in italiano.
-    is_ai_statistically = pp < 115.0
+    # I test hanno mostrato che 60 è troppo stringente. 70 è un valore più realistico per catturare GPT-4/Claude in italiano.
+    is_ai_statistically = pp < 60.0
 
     result_label = "NORMAL"
     tag = ""
