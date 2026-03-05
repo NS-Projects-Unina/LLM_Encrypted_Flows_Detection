@@ -33,7 +33,8 @@ docker logs -f inference-engine
 
 ## Esecuzione di un Test di Validazione
 
-docker exec -it attacker bash
+docker exec -it attacker-node bash
 python3 attack_sim.py
 docker logs -f edge-proxy
-docker exec -it mail-server postqueue -p
+docker logs -f mail-server
+docker exec -it mail-server cat /var/mail/root

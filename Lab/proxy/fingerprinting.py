@@ -70,20 +70,20 @@ def get_ja3_fingerprint(ch: tls.ClientHelloData.client_hello) -> str: # ch sarà
     return ja3_string
 
 # Handler per ClientHello, attivato ad ogni handshake TLS
-def tls_clienthello(data: tls.ClientHelloData): # tls.ClientHelloData è un oggetto che contiene tutte le informazioni del ClientHello intercettato da mitmproxy
-
-    client_ip = data.context.client.peername[0] 
+def tls_clienthello(data: tls.ClientHelloData):
+    # Estrazione metadati identificativi dal contesto del flusso
+    client_ip = data.context.client.peername[0]
     client_id = data.context.client.id
-    ch = data.client_hello 
+    ch = data.client_hello
 
-    # Generazione Stringa e Hash
+    # Generazione della stringa JA3 basata sui parametri TLS (Version, Ciphers, Extensions, Elliptic Curves)
     ja3_string = get_ja3_fingerprint(ch)
     ja3_hash = hashlib.md5(ja3_string.encode()).hexdigest()
 
-    # Chiamata al classificatore per determinare categoria e dettaglio
-    category, detail = classifier.classify(ja3_hash) 
+    # Interrogazione del database locale (malware_db e scripting_db)
+    category, detail = classifier.classify(ja3_hash)
     
-    # SALVATAGGIO NELLA MEMORIA CONDIVISA DI PYTHON
+    # Memorizzazione dello stato nella memoria condivisa per l'analisi successiva del Proxy (Nodo 2)
     shared_state.ja3_memory[client_id] = {
         "category": category,
         "detail": detail,
@@ -92,8 +92,17 @@ def tls_clienthello(data: tls.ClientHelloData): # tls.ClientHelloData è un ogge
     
     # Gestione delle due categorie principali: MALWARE vs AUTOMATION/UNKNOWN
     if category == "MALWARE":
-        print(f"[MALWARE] Blocchiamo la connessione: {detail}")
-        data.context.kill() # Termina immediatamente la connessione se è malware
-    else:
-        print(f"[AUTOMATION/UNKNOWN] Classificato come {category}. Inoltro al payload extractor.")
+        print(f"[JA3-BLOCK] Identificato {detail}. Interruzione immediata di Client e Server.")
+        
+        # Chiudiamo la connessione verso il Mail Server (se già aperta)
+        # Questo evita che Postfix rimanga in stato 'connect' nel log senza ricevere nulla
+        data.context.server.error = "Security Policy Block" 
+        data.context.client.error = "Security Policy Block"
 
+        # Killiamo il flow principale come sicurezza definitiva
+        if hasattr(data.context, "flow"):
+            data.context.flow.kill()
+            
+    else:
+        # Se non è malware, il flusso procede verso l'estrazione del payload SMTP
+        print(f"[JA3-FINGERPRINT] Classificato come {category}. [JA3:{ja3_hash}] Inoltro al payload extractor.")

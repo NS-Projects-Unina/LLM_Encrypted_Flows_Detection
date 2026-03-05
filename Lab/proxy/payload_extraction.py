@@ -38,12 +38,49 @@ def extract_clear_text(raw_bytes: bytes) -> str:
 
 
 def tcp_message(flow: tcp.TCPFlow): # Handler per i messaggi TCP, attivo su ogni pacchetto del flusso TCP, ci permette di analizzare i dati in transito e applicare logiche IPS basate sui metadati JA3
-    message = flow.messages[-1]
+    
+    # Identificazione immediata
     client_id = flow.client_conn.id
+    
+    # Verifichiamo il JA3 prima di fare qualsiasi altra cosa
+    ja3_info = shared_state.ja3_memory.get(client_id, {})
+    ja3_cat = ja3_info.get("category", "UNKNOWN")
+    
+    if ja3_cat == "MALWARE":
+        print(f"[IPS-BLOCK] Forzatura chiusura socket per malware JA3: {ja3_info.get('detail')}")
+        
+        # Svuotiamo i messaggi pendenti per evitare inoltri accidentali
+        if flow.messages:
+            flow.messages[-1].content = b""
+        
+        # Impostiamo un errore sulla connessione client e server.
+        # Questo forza mitmproxy a chiudere i socket TCP immediatamente.
+        flow.client_conn.error = "Killed by JA3 Policy"
+        if flow.server_conn and flow.server_conn.connected:
+            flow.server_conn.error = "Killed by JA3 Policy"
+        
+        # Pulizia della memoria per questo client
+        if client_id in session_state:
+            del session_state[client_id]
+        if client_id in shared_state.ja3_memory:
+            del shared_state.ja3_memory[client_id]
+
+        # Invece di kill(), usiamo return dopo aver impostato l'errore sulla connessione.
+        # Mitmproxy rileverà lo stato di errore e abbatterà il flusso senza eccezioni.
+        return
+
+    # Gestione stato sessione (solo se NON è malware)
+    message = flow.messages[-1]
     
     # Inizializziamo lo stato della sessione per questo client se non esiste già, questo ci permette di tracciare se siamo nella sezione DATA di una mail e di accumulare il payload
     if client_id not in session_state:
-        session_state[client_id] = {"in_data": False, "buffer": b"", "intercepted_messages": [], "ja3_category": "UNKNOWN"}
+        session_state[client_id] = {
+            "in_data": False, 
+            "buffer": b"", 
+            "intercepted_messages": [], 
+            "ja3_category": ja3_cat # Salviamo la categoria rilevata
+        }
+    
 
     # Analizziamo solo i messaggi provenienti dal client verso il server, ignorando quelli di risposta del server, questo perché vogliamo applicare le logiche IPS sui dati in ingresso
     if message.from_client:
@@ -70,7 +107,7 @@ def tcp_message(flow: tcp.TCPFlow): # Handler per i messaggi TCP, attivo su ogni
             
             # Attiviamo la cattura del payload nella sezione DATA
             state["in_data"] = True
-            print(f"[IPS] Comando DATA rilevato. Inizio cattura payload (JA3: {ja3_cat})")
+            print(f"[IPS] Comando DATA rilevato. Inizio cattura payload.")
             return
 
         if state["in_data"]:
@@ -95,10 +132,14 @@ def tcp_message(flow: tcp.TCPFlow): # Handler per i messaggi TCP, attivo su ogni
                     
                     # Fallback logico: se il parsing fallisce o non trova text/plain, passiamo il buffer decodificato
                     if not clean_text:
-                        print("[IPS] Attenzione: Nessun testo in chiaro estratto dal MIME. Invio buffer decodificato come fallback.")
+                        print("[IPS] Attenzione: Nessun testo in chiaro estratto dal MIME.")
                         clean_text = state["buffer"].decode('utf-8', errors='ignore')
                     else:
-                        print(f"[IPS] Testo MIME estratto con successo ({len(clean_text)} caratteri).")
+                        # AGGIUNGI QUESTA RIGA PER VEDERE IL CORPO NEL TERMINALE
+                        print(f"\n[IPS-CONTENT-VIEW] --- INIZIO CORPO DECIFRATO ---\n{clean_text}\n[IPS-CONTENT-VIEW] --- FINE CORPO DECIFRATO ---\n")
+
+
+                    print(f"[IPS] Invio al nodo di inferenza per la clasificazione.\n")
 
                     # Chiamata al nodo di inferenza
                     response = requests.post(
@@ -113,15 +154,16 @@ def tcp_message(flow: tcp.TCPFlow): # Handler per i messaggi TCP, attivo su ogni
                         verify=CERT_PATH # Usiamo il certificato TLS per la verifica della connessione al nodo di inferenza
                     )
                     
+
                     res = response.json()
                     label = res.get("label", "UNKNOWN") # La label restituita dall'IA
-
+                    
                     # Se la classificazione è AUTOMATION, applichiamo un tag specifico all'header Subject
                     if label == "AUTOMATION" or label == "MALWARE": # Aggiunto MALWARE nel caso in cui l'IA decida di non droppare ma solo taggare
                         ja3_info = state.get("ja3_category", "UNKNOWN")
                         tag = res.get("tag", "[AI-CHECK]")
                         
-                        print(f"[IPS-TAGGING] Messaggio classificato come {label}. Inserimento tag in corso...")
+                        print(f"[IPS-TAGGING] Messaggio classificato come {label} dal nodo di inferenza. Inserimento tag in corso...{tag}")
                         
                         # Scorriamo tutti i pacchetti TCP che abbiamo messo in pausa
                         for msg in state["intercepted_messages"]:

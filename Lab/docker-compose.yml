@@ -3,6 +3,7 @@ volumes:
 services:
   # Nodo 1: Ingestion Layer (Edge Proxy)
   edge-proxy:
+    init: true 
     build: 
       context: ./proxy 
       dockerfile: Dockerfile
@@ -44,6 +45,8 @@ services:
 
   # Nodo 2: Analysis Layer (Inference Engine) - IL "CERVELLO"
   inference-engine:
+    init: true
+    stop_signal: SIGINT
     build: ./analysis  # Useremo un Dockerfile per installare le librerie AI
     container_name: inference-engine
     platform: linux/arm64
@@ -57,7 +60,7 @@ services:
     # Comando che genera il certificato TLS al volo e poi avvia Uvicorn in HTTPS
     command: >
       sh -c "openssl req -x509 -newkey rsa:4096 -nodes -out /certs/cert.pem -keyout /certs/key.pem -days 365 -subj '/CN=inference-engine' -addext 'subjectAltName=IP:10.0.1.20,DNS:inference-engine' 
-      && uvicorn main:app --host 0.0.0.0 --port 5000 --ssl-keyfile /certs/key.pem --ssl-certfile /certs/cert.pem"
+      && exec uvicorn main:app --host 0.0.0.0 --port 5000 --ssl-keyfile /certs/key.pem --ssl-certfile /certs/cert.pem"
 
   # Nodo 3: Mail Server (Destinatario Finale)
   mail-server:

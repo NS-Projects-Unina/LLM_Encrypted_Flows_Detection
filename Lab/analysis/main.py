@@ -79,6 +79,7 @@ def classify_roberta_multi(text: str) -> int:
 
 @app.post("/analyze")
 async def analyze_payload(data: AlertData):
+    print(f"\n[AI NODE] Ricevuta richiesta di analisi. JA3 Classification: {data.ja3_classification}. Testo ricevuto: {data.payload} caratteri.")
     text = data.payload
     ja3_cat = data.ja3_classification
     
@@ -88,8 +89,7 @@ async def analyze_payload(data: AlertData):
     pp = calculate_perplexity(text)
     class_id = classify_roberta_multi(text) # 0:H-Legit, 1:H-Phish, 2:L-Legit, 3:L-Phish
     
-    # Innalziamo la soglia di Perplexity: i test hanno mostrato che 60 è troppo stringente.
-    # 115-120 è un valore più realistico per catturare GPT-4/Claude in italiano.
+    # I test hanno mostrato che 60 è troppo stringente. 115-120 è un valore più realistico per catturare GPT-4/Claude in italiano.
     is_ai_statistically = pp < 115.0
 
     result_label = "NORMAL"
