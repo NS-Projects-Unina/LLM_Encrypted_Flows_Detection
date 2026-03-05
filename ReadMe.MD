@@ -2,6 +2,7 @@
 
 ## Panoramica del Sistema
 NetSentinel è un sistema IPS/IDS operante a Livello 7 (Applicativo) progettato per la Deep Packet Inspection su traffico e-mail crittografato (SMTPS). Il sistema intercetta il traffico, ne estrae il payload MIME e utilizza un'architettura di intelligenza artificiale ibrida per classificare le minacce. L'obiettivo primario è distinguere tra comunicazioni legittime, attacchi di phishing scritti da operatori umani e frodi generate automaticamente tramite Large Language Models (LLM).
+Il sistema è un IPS/IDS operante a Livello 7 (Applicativo) progettato per la Deep Packet Inspection su traffico e-mail crittografato (SMTPS). Il sistema intercetta il traffico, ne estrae il payload MIME e utilizza un'architettura di intelligenza artificiale ibrida per classificare le minacce. L'obiettivo primario è distinguere tra comunicazioni legittime, attacchi di phishing scritti da operatori umani e frodi generate automaticamente tramite Large Language Models (LLM).
 
 ## Architettura di Rete e Specifiche Tecniche
 L'infrastruttura è containerizzata e segmentata in due reti virtuali isolate (`public-net`: 10.0.0.0/24 e `private-net`: 10.0.1.0/24) per garantire la sicurezza del backend.
